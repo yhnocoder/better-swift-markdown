@@ -1,5 +1,5 @@
 import Foundation
-import TreeSitter
+import TreeSitterCore
 
 /// The colour classes of code: one per code colour of a theme (the web editor's `--k-*` variables), named after its CSS
 /// classes in the comments.
@@ -55,24 +55,22 @@ public struct Highlighter: Sendable {
   public func tokens(lines: [String], language: String) -> [[Token]] {
     guard let grammar = grammar(language) else { return lines.map { _ in [] } }
     let slice = Slice(lines, dedent: grammar.dedent)
-    guard let (tree, text, offset) = bestParse(grammar, slice.text) else { return lines.map { _ in [] } }
-    return color(slice, lines.indices, tree, text, offset, grammar)
+    guard let (tree, offset) = bestParse(grammar, slice.text) else { return lines.map { _ in [] } }
+    return color(slice, lines.indices, tree, offset, grammar)
   }
 
-  /// The tokens of the slice's lines `wanted`, from the parse of `text` (the slice's text from `offset` on): only what
+  /// The tokens of the slice's lines `wanted`, from the parse of a text that has the slice's from `offset` on: only what
   /// can colour them is looked at
   fileprivate func color(
-    _ slice: Slice, _ wanted: Range<Int>, _ tree: Tree, _ text: [UInt16], _ offset: Int, _ grammar: Grammar
+    _ slice: Slice, _ wanted: Range<Int>, _ tree: SyntaxTree, _ offset: Int, _ grammar: Grammar
   ) -> [[Token]] {
     guard let first = wanted.first.map({ slice.lines[$0] }), let last = wanted.last.map({ slice.lines[$0] }) else {
       return []
     }
     var spans: [Span] = []
     let from = max(0, offset + first.start - 1)
-    collect(
-      grammar, tree.root, text, at: 0, into: &spans,
-      bytes: from..<(offset + last.start + last.count))
-    let classes = paint(spans, count: text.count, in: from..<(offset + last.start + last.count))
+    collect(grammar, tree.root, at: 0, into: &spans, units: from..<(offset + last.start + last.count))
+    let classes = paint(spans, count: tree.units.count, in: from..<(offset + last.start + last.count))
     return slice.lines[wanted].map { line in
       let start = offset + line.start
       let indent = line.cut > 0 && start > 0 ? classes[start - 1] : nil
@@ -84,24 +82,24 @@ public struct Highlighter: Sendable {
   /// comment. When the plain parse has errors, try the slice after each opening of one, and keep the parse that places
   /// the most text. Other errors (a slice of statements from a function body) need nothing: the query still colours
   /// the tokens inside ERROR nodes, as the tests check against whole files.
-  private func bestParse(_ grammar: Grammar, _ body: [UInt16]) -> (Tree, [UInt16], Int)? {
-    Highlighter.best(grammar, body) { text, _ in Tree(grammar.language, text) }
+  private func bestParse(_ grammar: Grammar, _ body: [UInt16]) -> (SyntaxTree, Int)? {
+    Highlighter.best(grammar, body) { text, _ in grammar.language.parse(text) }
   }
 
   /// The plain parse when it has no errors, else the one of it and the parses after each opening that places the most
-  /// text; `parse` gives the parse of a text (and the opening's index, -1 for none)
+  /// text, with where the body starts in its text; `parse` gives the parse of a text (and the opening's index, -1 for
+  /// none)
   fileprivate static func best(
-    _ grammar: Grammar, _ body: [UInt16], parse: ([UInt16], Int) -> Tree?
-  ) -> (Tree, [UInt16], Int)? {
+    _ grammar: Grammar, _ body: [UInt16], parse: ([UInt16], Int) -> SyntaxTree?
+  ) -> (SyntaxTree, Int)? {
     guard let plain = parse(body, -1) else { return nil }
-    guard ts_node_has_error(plain.root) else { return (plain, body, 0) }
-    var best = (plain, body, 0)
+    guard plain.root.hasError else { return (plain, 0) }
+    var best = (plain, 0)
     var cost = plain.errorCost
     for (k, opening) in grammar.openings.enumerated() {
-      let text = Array(opening.utf16) + [newline] + body
-      guard let tree = parse(text, k) else { continue }
+      guard let tree = parse(Array(opening.utf16) + [newline] + body, k) else { continue }
       let c = tree.errorCost
-      if c < cost { (best, cost) = ((tree, text, opening.utf16.count + 1), c) }
+      if c < cost { (best, cost) = ((tree, opening.utf16.count + 1), c) }
     }
     return best
   }
@@ -113,65 +111,57 @@ public struct Highlighter: Sendable {
 public final class HighlightSession: @unchecked Sendable {
   private let highlighter: Highlighter
   private let lock = NSLock()
-  private let parser: OpaquePointer = ts_parser_new()!
-  private var grammar: Grammar?
+  /// The grammar of the last call, and a parser of its language
+  private var parsing: (grammar: Grammar, parser: Parser)?
   private var body: [UInt16] = []
   /// By opening (-1: none), parsed for `body`
-  private var trees: [Int: Tree] = [:]
+  private var trees: [Int: SyntaxTree] = [:]
 
   public init(_ highlighter: Highlighter) { self.highlighter = highlighter }
-
-  deinit { ts_parser_delete(parser) }
 
   /// The tokens of `lines[wanted]`
   public func tokens(lines: [String], language: String, wanted: Range<Int>) -> [[Token]] {
     lock.withLock {
       let wanted = wanted.clamped(to: lines.indices)
-      guard let g = highlighter.grammar(language), ts_parser_set_language(parser, g.language) else {
-        return wanted.map { _ in [] }
-      }
+      guard let g = highlighter.grammar(language) else { return wanted.map { _ in [] } }
       let slice = Slice(lines, dedent: g.dedent)
-      if g.names != grammar?.names {
-        (grammar, body, trees) = (g, [], [:])
+      let parser: Parser
+      if let parsing, parsing.grammar.names == g.names {
+        edit(from: body, to: slice.text, openings: g.openings)
+        parser = parsing.parser
       } else {
-        edit(from: body, to: slice.text)
+        guard let p = Parser(g.language) else { return wanted.map { _ in [] } }
+        (parsing, body, trees) = ((g, p), [], [:])
+        parser = p
       }
       body = slice.text
-      var kept: [Int: Tree] = [:]
+      var kept: [Int: SyntaxTree] = [:]
       let best = Highlighter.best(g, slice.text) { text, k in
-        let t = Tree(parser, text, old: trees[k])
+        let t = parser.parse(text, old: trees[k])
         kept[k] = t
         return t
       }
       trees = kept
-      guard let (tree, text, offset) = best else { return wanted.map { _ in [] } }
-      return highlighter.color(slice, wanted, tree, text, offset, g)
+      guard let (tree, offset) = best else { return wanted.map { _ in [] } }
+      return highlighter.color(slice, wanted, tree, offset, g)
     }
   }
 
   /// Every kept parse edited from the old text to the new: what lies between their common start and end
-  private func edit(from a: [UInt16], to b: [UInt16]) {
-    var p = 0
-    while p < a.count, p < b.count, a[p] == b[p] { p += 1 }
-    var q = 0
-    while q < a.count - p, q < b.count - p, a[a.count - 1 - q] == b[b.count - 1 - q] { q += 1 }
-    if p == a.count && p == b.count { return }
-    func point(_ units: [UInt16], _ end: Int, shift: Int) -> TSPoint {
-      var row: UInt32 = shift > 0 ? 1 : 0
-      var lineStart = 0
-      for i in 0..<end where units[i] == newline {
-        row += 1
-        lineStart = i + 1
-      }
-      return TSPoint(row: row, column: UInt32((end - lineStart) * 2))
-    }
+  private func edit(from a: [UInt16], to b: [UInt16], openings: [String]) {
+    if a == b { return }
+    let e = diffEdit(a, b)
     for (k, tree) in trees {
-      let shift = k < 0 ? 0 : grammar!.openings[k].utf16.count + 1
-      var e = TSInputEdit(
-        start_byte: UInt32((shift + p) * 2), old_end_byte: UInt32((shift + a.count - q) * 2),
-        new_end_byte: UInt32((shift + b.count - q) * 2), start_point: point(b, p, shift: shift),
-        old_end_point: point(a, a.count - q, shift: shift), new_end_point: point(b, b.count - q, shift: shift))
-      ts_tree_edit(tree.raw, &e)
+      // A parse after an opening has the opening and a newline before the body
+      let shift = k < 0 ? 0 : openings[k].utf16.count + 1
+      func moved(_ p: TreeEdit.Point) -> TreeEdit.Point {
+        TreeEdit.Point(row: p.row + (shift > 0 ? 1 : 0), column: p.column)
+      }
+      tree.edit(
+        TreeEdit(
+          startIndex: shift + e.startIndex, oldEndIndex: shift + e.oldEndIndex, newEndIndex: shift + e.newEndIndex,
+          startPosition: moved(e.startPosition), oldEndPosition: moved(e.oldEndPosition),
+          newEndPosition: moved(e.newEndPosition)))
     }
   }
 }
@@ -219,23 +209,15 @@ private struct Span {
   var whole = false
 }
 
-/// The query's spans over the tree of `text`, which starts at `base` in the text being painted.
+/// The query's spans over the tree of a text that starts at `base` in the text being painted; `units`: only those that
+/// meet these code units of it
 private func collect(
-  _ grammar: Grammar, _ root: TSNode, _ text: [UInt16], at base: Int, into spans: inout [Span],
-  bytes: Range<Int>? = nil
+  _ grammar: Grammar, _ root: Node, at base: Int, into spans: inout [Span], units: Range<Int>? = nil
 ) {
-  let cursor = ts_query_cursor_new()
-  defer { ts_query_cursor_delete(cursor) }
-  if let bytes { ts_query_cursor_set_byte_range(cursor, UInt32(bytes.lowerBound * 2), UInt32(bytes.upperBound * 2)) }
-  let query = grammar.query
-  ts_query_cursor_exec(cursor, query.raw, root)
-  var match = TSQueryMatch()
-  let string = { (n: TSNode) in String(decoding: text[n.range], as: UTF16.self) }
-  while ts_query_cursor_next_match(cursor, &match) {
-    let captures = UnsafeBufferPointer(start: match.captures, count: Int(match.capture_count))
-    let pattern = Int(match.pattern_index)
-    guard query.holds(pattern, captures, string) else { continue }
-    for capture in captures {
+  let text = root.units
+  grammar.query.forEachMatch(under: root, units: units) { match in
+    let pattern = match.pattern
+    for capture in match.captures {
       let node = capture.node
       let range = node.range
       func add(_ r: Range<Int>, _ kind: TokenClass?, whole: Bool = false) {
@@ -244,23 +226,22 @@ private func collect(
             Span(range: base + r.lowerBound..<base + r.upperBound, kind: kind, pattern: pattern, whole: whole))
         }
       }
-      switch query.actions[Int(capture.index)] {
+      switch grammar.actions[capture.index] {
       case .paint(let kind): add(range, kind)
       case .callee: if let name = calleeName(node) { add(name.range, .function) }
       case .macro:
-        let parent = ts_node_parent(node).type
-        let body = Array(text[range])
-        guard parent == "preproc_def" || parent == "preproc_function_def", !string(node).allSatisfy(\.isWhitespace),
-          let tree = Tree(grammar.language, body)
+        let parent = node.parent?.type
+        guard parent == "preproc_def" || parent == "preproc_function_def", !node.text.allSatisfy(\.isWhitespace),
+          let tree = grammar.language.parse(Array(text[range]))
         else { break }
-        collect(grammar, tree.root, body, at: base + range.lowerBound, into: &spans)
+        collect(grammar, tree.root, at: base + range.lowerBound, into: &spans)
       case .stringPrefix:
         let letters = text[range].prefix { $0 != unit("\"") && $0 != unit("'") }.count
         add(range.lowerBound..<range.lowerBound + letters, .keyword)
       case .placeholders:
-        let prefix = string(ts_node_child(ts_node_parent(node), 0)).lowercased()
+        let prefix = (node.parent?.child(0)?.text ?? "").lowercased()
         guard !prefix.contains("f"), !prefix.contains("r") else { break }
-        let s = string(node)
+        let s = node.text
         for re in prefix.contains("b") ? [percentPlaceholder] : [percentPlaceholder, bracePlaceholder] {
           for m in re.matches(in: s, range: NSRange(location: 0, length: s.utf16.count)) {
             add(range.lowerBound + m.range.location..<range.lowerBound + m.range.location + m.range.length, .number)
@@ -268,9 +249,9 @@ private func collect(
         }
       case .docstring: add(range, .comment, whole: true)
       case .decorator:
-        let expression = ts_node_named_child(node, 0)
-        let end = expression.type == "call" ? expression.field("function").range.upperBound : range.upperBound
-        add(range.lowerBound..<end, .number, whole: true)
+        let expression = node.namedChild(0)
+        let function = expression?.type == "call" ? expression?.field("function") : nil
+        add(range.lowerBound..<(function?.range.upperBound ?? range.upperBound), .number, whole: true)
       }
     }
   }

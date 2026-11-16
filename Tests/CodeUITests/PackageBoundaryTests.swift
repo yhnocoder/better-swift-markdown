@@ -6,9 +6,8 @@ import Testing
 private let allowed: [String: Set<String>] = [
   "CodeCore": ["Foundation"],
   "CodeUI": ["AppKit", "CodeCore", "CoreGraphics", "CoreText", "Foundation", "QuartzCore"],
-  "TreeSitterHighlight": [
-    "CodeUI", "Foundation", "TreeSitter", "TreeSitterCUDA", "TreeSitterPython", "TreeSitterRust",
-  ],
+  "TreeSitterCore": ["Foundation", "TreeSitter", "TreeSitterCUDA", "TreeSitterPython", "TreeSitterRust"],
+  "TreeSitterHighlight": ["CodeUI", "Foundation", "TreeSitterCore"],
   "TestGuard": ["AppKit"],
   "MarkdownCore": ["CodeCore", "Foundation"],
   "MarkdownUI": [

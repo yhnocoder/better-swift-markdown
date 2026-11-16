@@ -14,12 +14,13 @@ macOS 27 or later, Swift 6.
 |---|---|---|
 | `CodeCore` | Foundation | Code editing without a view: the text, the selection, keys as commands, undo, find and replace, line comments, and `LineAnchors` (where a line went after an edit, for anything pinned to lines). |
 | `CodeUI` | AppKit, CodeCore | Code laid out and drawn (`CodeLines`, `CodeDraw`), and `CodeEditorView`: line numbers, current line, selection, wrapping by width, tab stops, bands behind lines, room after lines for the host's own content, a find bar. Colours come from a `CodeHighlighter`. |
-| `TreeSitterHighlight` | CodeUI, tree-sitter | A `CodeHighlighter` on tree-sitter: Python, Rust, C, C++ and CUDA built in, any other grammar registered by the host; incremental parsing while text is edited (`HighlightSession`). |
+| `TreeSitterCore` | Foundation, tree-sitter | tree-sitter without a view: the grammars of Python, Rust and C, C++ and CUDA (`Language`), trees parsed over UTF-16 code units, whole or again after an edit (`SyntaxTree`, `TreeEdit`, `diffEdit`), their nodes, and queries with `#match?` and `#any-of?` (`Query`), for a host that reads code itself. |
+| `TreeSitterHighlight` | CodeUI, TreeSitterCore | A `CodeHighlighter` on tree-sitter: Python, Rust, C, C++ and CUDA built in, any other grammar registered by the host; incremental parsing while text is edited (`HighlightSession`). |
 | `MarkdownCore` | Foundation, CodeCore | Markdown as a document: block and inline lexing (marked's rules, JavaScript regex semantics), the source operations of the editor (blocks moved, lists indented, tables edited, paste shaped), all on the source text. |
 | `MarkdownUI` | AppKit, MarkdownCore, CodeUI | Markdown drawn and edited: `BlockLayout` (a document laid out at a width in a `MarkdownTheme`), drawing at any scale, and `MarkdownEditorView` (caret, selection, menus, find, tables, images, formulas, diagrams). |
 | `TestGuard` | AppKit | What a test process may not show or touch (menus, alerts, panels, the browser, Finder, the general pasteboard), replaced in a test process only. The editor puts it in; a host whose own tests make windows can too. |
 
-`CodeCore` and `MarkdownCore` have no UI and can run anywhere Foundation does.
+`CodeCore`, `TreeSitterCore` and `MarkdownCore` have no UI and can run anywhere Foundation does.
 
 ## Code
 
@@ -42,6 +43,16 @@ Another grammar, with a highlight query that uses the capture names `kw`, `op`, 
 let highlighter = Highlighter(grammars: [
   Grammar(names: ["go"], language: tree_sitter_go(), highlights: goQuery)
 ])
+```
+
+Code read without colouring it, on the same trees (indexes and columns are UTF-16 code units):
+
+```swift
+import TreeSitterCore
+
+let tree = Language.python.parse(Array(text.utf16))!   // nil only when the grammar does not fit tree-sitter
+let calls = try Query(.python, "(call function: (identifier) @callee)")
+for c in calls.captures(under: tree.root) { print(c.node.text, c.node.startRow) }
 ```
 
 ## Markdown

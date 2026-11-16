@@ -1,12 +1,12 @@
 import Testing
-
-@testable import TreeSitterHighlight
+import TreeSitterCore
+import TreeSitterHighlight
 
 // A host adds grammars of its own: each colours the languages it names, and wins over a built-in one of the same name.
 @Suite struct Grammars {
   /// A grammar that colours only comments, on the Python grammar
   static let comments = Grammar(
-    names: ["snake", "python"], language: Grammar.python.language, highlights: "(comment) @com")
+    names: ["snake", "python"], language: Language.python.raw, highlights: "(comment) @com")
 
   @Test func aHostsGrammarColoursTheLanguagesItNamesAndWinsOverABuiltInOne() {
     let h = Highlighter(grammars: [Grammars.comments])
