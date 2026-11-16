@@ -5,7 +5,7 @@ import AppKit
 /// asked for. ↵ and ⇧↵ in the query go on and back, ↵ in the replacement replaces the current match and ⌘↵ all of them,
 /// Esc closes it; a button does the same through `perform`. What they do is the host's (`onChange`, `onStep`,
 /// `onReplace`, `onClose`, `onResize`). How it looks is the host's too. The code editor and the Markdown editor both
-/// show it
+/// show it; over text that cannot change it only finds (`canReplace`)
 @MainActor
 public final class FindBar: NSView, NSTextFieldDelegate {
   public struct Look {
@@ -44,6 +44,10 @@ public final class FindBar: NSView, NSTextFieldDelegate {
     }
   }
   public private(set) var replacing = false
+  /// The replacement can be shown and used; false for text that cannot change: find only
+  public var canReplace = true {
+    didSet { if !canReplace { setReplacing(false) } }
+  }
   public var onChange: () -> Void = {}
   public var onStep: (Bool) -> Void = { _ in }
   public var onReplace: (Bool) -> Void = { _ in }
@@ -97,8 +101,10 @@ public final class FindBar: NSView, NSTextFieldDelegate {
     layer?.cornerRadius = look.radius
   }
 
-  /// Shown at the top right of `visible`, the keys in the query (in the replacement when replacing with a query)
+  /// Shown at the top right of `visible`, the keys in the query (in the replacement when replacing with a query); without
+  /// the replacement when it cannot replace
   public func show(replace: Bool, look: Look, in visible: CGRect) {
+    let replace = replace && canReplace
     replacing = replace
     buttons?.needsDisplay = true
     restyle(look)
@@ -110,7 +116,7 @@ public final class FindBar: NSView, NSTextFieldDelegate {
 
   /// The replacement shown or hidden, the keys in the field it leaves
   public func setReplacing(_ on: Bool) {
-    guard on != replacing else { return }
+    guard on != replacing, canReplace || !on else { return }
     replacing = on
     needsLayout = true
     buttons?.needsDisplay = true
@@ -126,8 +132,8 @@ public final class FindBar: NSView, NSTextFieldDelegate {
     case .previous: onStep(false)
     case .next: onStep(true)
     case .close: close()
-    case .replace: onReplace(false)
-    case .replaceAll: onReplace(true)
+    case .replace: if canReplace { onReplace(false) }
+    case .replaceAll: if canReplace { onReplace(true) }
     }
   }
 
@@ -146,7 +152,11 @@ public final class FindBar: NSView, NSTextFieldDelegate {
     let cmd = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
     switch sel {
     case #selector(NSResponder.insertNewline(_:)):
-      if control === replacement { onReplace(cmd) } else { onStep(!shift) }
+      if control === replacement {
+        if canReplace { onReplace(cmd) }
+      } else {
+        onStep(!shift)
+      }
       return true
     case #selector(NSResponder.cancelOperation(_:)):
       close()

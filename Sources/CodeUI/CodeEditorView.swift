@@ -1,11 +1,14 @@
 import AppKit
 import CodeCore
 
-/// Code edited in place: a CodeEditor drawn as CodeLines lays the code out and CodeDraw draws it, the same rows and
-/// glyphs as the code shown without editing, with the caret, the selection, an input method's composition, the line
-/// numbers and the current line's background. Keys are CodeKeys.mac's, typing and input methods come through
-/// NSTextInputClient, the mouse places, selects words and lines and drags. It does not scroll: the host sizes it to
-/// `height` (`onHeight`), and scales it with `place(_:zoom:)` without laying it out again
+/// Code edited in place, or only read: a CodeEditor drawn as CodeLines lays the code out and CodeDraw draws it, the
+/// same rows and glyphs as the code shown without editing, with the caret, the selection, an input method's
+/// composition, the line numbers and the current line's background. Keys are CodeKeys.mac's, typing and input methods
+/// come through NSTextInputClient, the mouse places, selects words and lines and drags. Lines are laid out as they are
+/// drawn (CodeTextLayout), so a text of any length opens at once; new colours and a moved selection lay nothing out.
+/// Read only (`isEditable` false) it selects, copies and finds, and passes on the keys it does not use (for its host
+/// to scroll with). It does not scroll itself: the host sizes it to `height` (`onHeight`) and puts it in a scroll view,
+/// or scales it with `place(_:zoom:)` without laying it out again
 @MainActor
 public final class CodeEditorView: NSView {
   /// How it looks, in the host's values
@@ -52,16 +55,41 @@ public final class CodeEditorView: NSView {
   public var insertions: [CodeLines.Insertion] = [] { didSet { relayout() } }
   /// The text's colours while it changes; without, what `runs` gives
   public var colors: CodeColors? {
-    didSet { colors?.ready = { [weak self] in self?.relayout() } }
+    didSet {
+      colors?.ready = { [weak self] in self?.recolor() }
+      recolor()
+    }
   }
-  /// Each line's colours when there is no `colors`
-  public var runs: [[CodeRun]] = [] { didSet { relayout() } }
+  /// Each line's colours when there is no `colors`: new ones are drawn without laying the text out again
+  public var runs: [[CodeRun]] {
+    get { lineRuns }
+    set {
+      lineRuns = newValue
+      recolor()
+    }
+  }
+  private var lineRuns: [[CodeRun]]
+  /// What the user does can change the text; false: it is only read (selected, copied, found in), and the keys it does
+  /// not use go on to the next responder. The host's `change` and `reset` still change it
+  public var isEditable = true {
+    didSet {
+      guard isEditable != oldValue else { return }
+      findBar?.canReplace = isEditable
+      if !isEditable, editor.composition != nil {
+        super.inputContext?.discardMarkedText()
+        change { $0.cancelMarked() }
+      }
+      // the caret and its line's background shown or hidden
+      redraw(marked)
+      placeCaret()
+    }
+  }
   public var onChange: ((String) -> Void)?
   /// Escape, ⌘↩
   public var onExit: (() -> Void)?
   public var onHeight: ((CGFloat) -> Void)?
-  /// The lines are laid out again (their text, the width, room after them, colours): what `frame(ofLines:)` answers
-  /// may have changed
+  /// The lines are laid out again (their text, the width, room after them): what `frame(ofLines:)` answers may have
+  /// changed. Not for new colours or a moved selection
   public var onLayout: (() -> Void)?
   /// Presses of a multi-click that began outside the view and goes on in it (the click that opened it): they count from
   /// the first press made here, so the second press of the double-click that opened the editor only places the caret.
@@ -91,12 +119,17 @@ public final class CodeEditorView: NSView {
   /// Redrawn only in view: what is still to draw out of it
   private var stale: [CGRect] = []
 
-  /// `firstNumber` and `wrap` given here, not set after: each set lays the whole text out again
-  public init(text: String, look: Look, firstNumber: Int = 1, wrap: Bool = false) {
-    editor = CodeEditor(text: text, selection: CodeSelection((text as NSString).length))
+  /// Laid out once, with all of these: `firstNumber` and `wrap` set after lay the text out again (`runs` set after
+  /// only colours it again). Not `editable`: the selection at the start, else at the end
+  public init(
+    text: String, look: Look, firstNumber: Int = 1, wrap: Bool = false, editable: Bool = true, runs: [[CodeRun]] = []
+  ) {
+    editor = CodeEditor(text: text, selection: CodeSelection(editable ? text.utf16.count : 0))
     self.look = look
     self.firstNumber = firstNumber
     self.wrap = wrap
+    isEditable = editable
+    lineRuns = runs
     // laid out once, by relayout below
     layout = CodeTextLayout(text: "", x: 0, metrics: look.metrics, style: look.style)
     super.init(frame: .zero)
@@ -112,6 +145,8 @@ public final class CodeEditorView: NSView {
   public override var acceptsFirstResponder: Bool { true }
   /// A press in a window that is not key places the caret at once, as a press on a text field does
   public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  /// None while the text cannot change: no input method composes in it
+  public override var inputContext: NSTextInputContext? { isEditable ? super.inputContext : nil }
 
   public override func becomeFirstResponder() -> Bool {
     defer { placeCaret() }
@@ -126,8 +161,24 @@ public final class CodeEditorView: NSView {
   /// The host's own edit of the editor (a language set, a selection restored, an edit it made)
   public func change(_ f: (inout CodeEditor) -> Void) {
     let before = editor.text
+    let composed = editor.composition
     f(&editor)
-    changed(before)
+    changed(before, composed)
+  }
+
+  /// Another text in the view, with its colours, laid out once: the selection at its start, the undo history and any
+  /// composition let go, the editor's settings and the find bar kept. `onChange` is not called: the host gave the text
+  public func reset(text: String, runs: [[CodeRun]] = []) {
+    if editor.composition != nil { inputContext?.discardMarkedText() }
+    var e = CodeEditor(text: text, clock: editor.clock)
+    e.indentUnit = editor.indentUnit
+    e.tabWidth = editor.tabWidth
+    e.lineComment = editor.lineComment
+    editor = e
+    lineRuns = runs
+    findFrom = 0
+    relayout()
+    count()
   }
 
   /// Puts the view at `frame` in its superview, its content drawn `zoom` times its size: laid out again only when the
@@ -162,76 +213,84 @@ public final class CodeEditorView: NSView {
     return q + (c.text as NSString).length
   }
 
+  /// The text indexed again (its lines, rows and where they are) and what changed drawn again: for a new text or
+  /// composition, width to wrap to, numbering, room or look
   private func relayout() {
     let m = look.metrics
-    let (text, at, n) = shown
-    let count = text.utf16.reduce(1) { $1 == 0x0A ? $0 + 1 : $0 }
-    gutter = CodeLines.gutter(lastNumber: firstNumber + count - 1, metrics: m)
-    var lineRuns = colors?.runs(for: editor.text, visible: visibleLines(count)) ?? runs
-    if n > 0 {
-      // the composed line keeps the colours before the composition
-      let ns = editor.text as NSString
-      let start = ns.lineRange(for: NSRange(location: at, length: 0)).location
-      let line = ns.substring(to: start).utf16.count { $0 == 0x0A }
-      if line < lineRuns.count { lineRuns[line] = lineRuns[line].filter { $0.columns.upperBound <= at - start } }
-    }
+    let text = shown.text
+    gutter = CodeLines.gutter(lastNumber: firstNumber + CodeTextIndex.count(linesOf: text) - 1, metrics: m)
     let widthChanged = laidWidth != bounds.width
     laidWidth = bounds.width
     let before = layout
-    let gutterBefore = gutter
     layout = CodeTextLayout(
-      text: text, firstNumber: firstNumber, runs: lineRuns,
+      text: text, firstNumber: firstNumber, runs: currentRuns(),
       wrapWidth: wrap ? CodeLines.wrapWidth(width: bounds.width, gutter: gutter, metrics: m) : nil,
       insertions: insertions, top: look.padTop, x: gutter, metrics: m, style: look.style)
-    let h = layout.lines.bottom + look.padBottom
+    let h = layout.bottom + look.padBottom
     if h != height {
       height = h
       onHeight?(h)
     }
-    // only what changed is drawn again: the rows that differ, and the marks where they were and are
+    // only what changed is drawn again: the lines that differ, and the marks where they were and are
     let now = marks()
-    if widthChanged || gutterBefore != gutter {
-      redraw(bounds)
-    } else {
-      redraw(CodeEditorView.changed(before.lineRows, layout.lineRows, width: bounds.width).union(marked).union(now))
-    }
+    redraw(widthChanged ? bounds : layout.changedRect(from: before, width: bounds.width).union(marked).union(now))
     marked = now
     placeCaret()
     placeFindBar()
     onLayout?()
   }
 
-  /// The rows from the first that differs to the last, as they were and as they are
-  static func changed(_ a: [CodeLines.Row], _ b: [CodeLines.Row], width: CGFloat) -> CGRect {
-    var p = 0
-    while p < a.count, p < b.count, a[p] == b[p] { p += 1 }
-    if p == a.count && p == b.count { return .null }
-    var q = 0
-    while q < a.count - p, q < b.count - p, a[a.count - 1 - q] == b[b.count - 1 - q] { q += 1 }
-    var r = CGRect.null
-    for rows in [a[p..<(a.count - q)], b[p..<(b.count - q)]] {
-      if let f = rows.first, let l = rows.last {
-        r = r.union(CGRect(x: 0, y: f.y, width: width, height: l.y + l.height - f.y))
-      }
+  /// New colours on the rows as they are: what is in view drawn again, the rest as it comes into view
+  private func recolor() {
+    layout = layout.recolored(currentRuns())
+    redraw(bounds)
+  }
+
+  /// The selection moved, the text as it was: its marks drawn again where they were and are, nothing laid out
+  private func reselect() {
+    let now = marks()
+    redraw(marked.union(now))
+    marked = now
+    placeCaret()
+  }
+
+  /// Each line's colours as they are now, for the text as drawn
+  private func currentRuns() -> [[CodeRun]] {
+    var out = colors?.runs(for: editor.text, visible: visibleLines()) ?? lineRuns
+    if let c = editor.composition, !c.text.isEmpty {
+      // the composed line keeps the colours before the composition
+      let ns = editor.text as NSString
+      let start = ns.lineRange(for: NSRange(location: c.at, length: 0)).location
+      let line = ns.substring(to: start).utf16.count { $0 == 0x0A }
+      if line < out.count { out[line] = out[line].filter { $0.columns.upperBound <= c.at - start } }
     }
+    return out
+  }
+
+  /// The selection, the caret's line and the composition, as they are drawn now: the rows they are on, across
+  private func marks() -> CGRect {
+    let w = bounds.width
+    let h = layout.metrics.row
+    func across(_ rows: ClosedRange<Int>) -> CGRect {
+      let top = layout.y(ofRow: rows.lowerBound)
+      return CGRect(x: 0, y: top, width: w, height: layout.y(ofRow: rows.upperBound) + h - top)
+    }
+    func rows(_ range: Range<Int>) -> ClosedRange<Int> {
+      let a = layout.row(of: range.lowerBound, assoc: 1)
+      return a...max(a, layout.row(of: range.upperBound, assoc: -1))
+    }
+    var r = CGRect.null
+    let s = editor.selection.range
+    if !s.isEmpty { r = across(rows(drawn(s.lowerBound)..<drawn(s.upperBound))) }
+    if let line = caretLine() { r = r.union(across(line.lowerBound...(line.upperBound - 1))) }
+    let (_, at, n) = shown
+    if n > 0 { r = r.union(across(rows(at..<(at + n))).insetBy(dx: 0, dy: -3)) }
     return r
   }
 
-  /// The selection, the caret's line and the composition, as they are drawn now
-  private func marks() -> CGRect {
-    let w = bounds.width
-    var r = CGRect.null
-    let s = editor.selection.range
-    for b in layout.rects(drawn(s.lowerBound)..<drawn(s.upperBound), right: w) { r = r.union(b) }
-    let line = layout.placed(layout.row(of: drawn(editor.selection.head), assoc: editor.assoc)).kind
-    if case .line(let n, _, _, _) = line {
-      for row in layout.lineRows {
-        if case .line(n, _, _, _) = row.kind { r = r.union(CGRect(x: 0, y: row.y, width: w, height: row.height)) }
-      }
-    }
-    let (_, at, n) = shown
-    for b in layout.rects(at..<(at + n), right: w) { r = r.union(b.insetBy(dx: 0, dy: -3)) }
-    return r
+  /// The rows of the caret's line
+  private func caretLine() -> Range<Int>? {
+    layout.rows(ofLine: layout.line(ofRow: layout.row(of: drawn(editor.selection.head), assoc: editor.assoc)))
   }
 
   /// Draws `r` again, now where it is in view and when it comes into view for the rest: code thousands of
@@ -266,28 +325,55 @@ public final class CodeEditorView: NSView {
 
   public override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
+    watchAncestors()
     stale = [bounds]
     drawSeen(visibleRect)
   }
 
+  public override func viewDidMoveToSuperview() {
+    super.viewDidMoveToSuperview()
+    watchAncestors()
+  }
+
+  /// Every view holding it watched for being scrolled or resized: what is stale is drawn as it comes into view
+  private func watchAncestors() {
+    let center = NotificationCenter.default
+    center.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
+    center.removeObserver(self, name: NSView.boundsDidChangeNotification, object: nil)
+    guard window != nil else { return }
+    var v = superview
+    while let a = v {
+      center.addObserver(self, selector: #selector(ancestorMoved), name: NSView.frameDidChangeNotification, object: a)
+      center.addObserver(self, selector: #selector(ancestorMoved), name: NSView.boundsDidChangeNotification, object: a)
+      v = a.superview
+    }
+  }
+
+  @objc private func ancestorMoved(_ n: Notification) {
+    drawSeen(visibleRect)
+    placeFindBar()
+  }
+
   /// Where `lines` are drawn in the view (its own points, at zoom 1); nil when none is shown
   public func frame(ofLines lines: ClosedRange<Int>) -> CodeLines.LineFrame? {
-    layout.lines.frame(of: lines, width: bounds.width)
+    layout.frame(ofLines: lines, width: bounds.width)
   }
 
   /// The lines in view (by the rows as last laid out), all of them before there is a view
-  private func visibleLines(_ count: Int) -> Range<Int> {
+  private func visibleLines() -> Range<Int> {
     let v = visibleRect
-    guard !v.isEmpty else { return 0..<count }
-    let shown = layout.lineRows.compactMap { r -> Int? in
-      guard r.y < v.maxY, r.y + r.height > v.minY, case .line(let n, _, _, _) = r.kind else { return nil }
-      return n - firstNumber
-    }
-    guard let lo = shown.min(), let hi = shown.max() else { return 0..<count }
-    return lo..<min(count, hi + 1)
+    let all = 0..<layout.lineCount
+    guard !v.isEmpty else { return all }
+    let rows = layout.rows(in: v.minY...v.maxY)
+    guard !rows.isEmpty else { return all }
+    return layout.index.line(ofRow: rows.lowerBound)..<(layout.index.line(ofRow: rows.upperBound - 1) + 1)
   }
 
   private func placeCaret() {
+    guard isEditable else {
+      caret.displayMode = .hidden
+      return
+    }
     let s = editor.selection
     let showing = window?.firstResponder === self && s.isEmpty
     let q = editor.composition.map { $0.at + $0.selected.lowerBound } ?? s.head
@@ -297,9 +383,12 @@ public final class CodeEditorView: NSView {
     caret.displayMode = showing && editor.composition?.selected.isEmpty != false ? .automatic : .hidden
   }
 
-  private func changed(_ before: String) {
-    if editor.text != before { onChange?(editor.text) }
-    relayout()
+  /// After the editor changed: the text laid out again when it or the composition changed, else only the selection's
+  /// marks drawn again
+  private func changed(_ before: String, _ composed: CodeEditor.Composition?) {
+    let edited = editor.text != before
+    if edited { onChange?(editor.text) }
+    if edited || editor.composition != composed { relayout() } else { reselect() }
     if editor.composition == nil { inputContext?.invalidateCharacterCoordinates() }
   }
 
@@ -308,28 +397,30 @@ public final class CodeEditorView: NSView {
   public override func draw(_ dirty: NSRect) {
     guard let ctx = NSGraphicsContext.current?.cgContext else { return }
     ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+    // lines come into view: their colours asked for, if not coloured yet
+    colors?.see(visibleLines())
     let w = bounds.width
-    let rows = layout.lineRows
+    let h = layout.metrics.row
+    let band = dirty.minY...dirty.maxY
+    let rows = layout.rows(in: band)
     // the caret's line, all of its rows
-    if let color = look.currentLine, editor.composition == nil {
-      let line = layout.placed(layout.row(of: drawn(editor.selection.head), assoc: editor.assoc)).kind
-      if case .line(let n, _, _, _) = line {
-        ctx.setFillColor(color)
-        for r in rows {
-          if case .line(n, _, _, _) = r.kind { ctx.fill(CGRect(x: 0, y: r.y, width: w, height: r.height)) }
-        }
-      }
+    if isEditable, let color = look.currentLine, editor.composition == nil, let line = caretLine() {
+      ctx.setFillColor(color)
+      for r in line.clamped(to: rows) { ctx.fill(CGRect(x: 0, y: layout.y(ofRow: r), width: w, height: h)) }
     }
     CodeDraw.decorations(
-      decorations, of: layout.lines, in: ctx, gutter: gutter, width: w, band: look.band, markX: 2,
+      decorations, of: layout, in: ctx, dirty: dirty, gutter: gutter, width: w, band: look.band, markX: 2,
       markSize: min(14, look.metrics.padLeft - 2))
     let s = editor.selection.range
     ctx.setFillColor(look.selection)
-    for r in layout.rects(drawn(s.lowerBound)..<drawn(s.upperBound), right: w) where r.intersects(dirty) { ctx.fill(r) }
+    for r in layout.rects(drawn(s.lowerBound)..<drawn(s.upperBound), right: w, within: band) where r.intersects(dirty) {
+      ctx.fill(r)
+    }
     let numberRight = gutter - look.metrics.numberGap
-    for r in rows where r.y < dirty.maxY && r.y + r.height > dirty.minY {
-      guard case .line(let n, let wrapped, let text, let runs) = r.kind else { continue }
-      let mid = r.y + r.height / 2
+    for r in rows {
+      let row = layout.placed(r)
+      guard case .line(let n, let wrapped, let text, let runs) = row.kind else { continue }
+      let mid = row.y + row.height / 2
       if !wrapped {
         CodeDraw.number(
           n, in: ctx, right: numberRight, midY: mid, font: look.style.font,
@@ -342,7 +433,7 @@ public final class CodeEditorView: NSView {
     if n > 0 {
       ctx.setFillColor(look.style.ink)
       let f = look.style.font.ct
-      for r in layout.rects(at..<(at + n), right: w) {
+      for r in layout.rects(at..<(at + n), right: w, within: band) {
         let base = r.midY + (CTFontGetAscent(f) - CTFontGetDescent(f)) / 2 + 2
         ctx.fill(CGRect(x: r.minX, y: base, width: r.width, height: 1))
       }
@@ -374,12 +465,19 @@ public final class CodeEditorView: NSView {
       onExit?()
       return
     case "Meta-c": return copy(nil)
-    case "Meta-x": return cut(nil)
-    case "Meta-v": return paste(nil)
+    case "Meta-x" where isEditable: return cut(nil)
+    case "Meta-v" where isEditable: return paste(nil)
     default: break
     }
-    if let c = CodeKeys.mac[name] { return perform(c) }
-    interpretKeyEvents([e])
+    if let c = CodeKeys.mac[name], isEditable || Self.selects(c) { return perform(c) }
+    // read only: typing, editing keys and plain moves are the host's (to scroll with)
+    if isEditable { interpretKeyEvents([e]) } else { super.keyDown(with: e) }
+  }
+
+  /// What a command does to text that cannot change: it selects (a move that extends the selection, the line, all)
+  private static func selects(_ c: CodeCommand) -> Bool {
+    if case .move(_, _, let extend) = c { return extend }
+    return !c.changesText
   }
 
   /// ⌘F, ⌘G and ⇧⌘G come as key equivalents first, while the editor or its find bar has the keys
@@ -392,7 +490,7 @@ public final class CodeEditorView: NSView {
   private func find(_ name: String) -> Bool {
     guard let look = findLook else { return false }
     switch name {
-    // ⌥⌘F and ⌘H with the replacement (find.ts findKey)
+    // ⌥⌘F and ⌘H with the replacement (find.ts findKey), when the text can change
     case "Meta-f", "Meta-Alt-f", "Meta-h":
       let bar = findBar ?? makeFindBar()
       findFrom = editor.selection.range.lowerBound
@@ -409,6 +507,7 @@ public final class CodeEditorView: NSView {
 
   private func makeFindBar() -> FindBar {
     let bar = FindBar()
+    bar.canReplace = isEditable
     bar.onChange = { [weak self] in
       guard let self else { return }
       self.change { $0.select(CodeSelection(self.findFrom)) }
@@ -436,9 +535,9 @@ public final class CodeEditorView: NSView {
   }
 
   /// The match selected replaced by what the bar's replacement holds and the next one selected, or every match
-  /// replaced (one step for undo)
+  /// replaced (one step for undo); nothing when the text cannot change
   public func replaceFound(all: Bool) {
-    guard let bar = findBar, !bar.query.stringValue.isEmpty else { return }
+    guard isEditable, let bar = findBar, !bar.query.stringValue.isEmpty else { return }
     let (q, with, cs) = (bar.query.stringValue, bar.replacement.stringValue, bar.caseSensitive)
     var found = false
     change {
@@ -455,7 +554,13 @@ public final class CodeEditorView: NSView {
   /// The match selected, for the host to bring into view
   private func revealFound() {
     let s = editor.selection.range
-    if let r = layout.rects(drawn(s.lowerBound)..<drawn(s.upperBound), right: bounds.width).first { onFound?(r) }
+    if let r = firstBox(drawn(s.lowerBound)..<drawn(s.upperBound)) { onFound?(r) }
+  }
+
+  /// A range's first box: on the row it starts in (or the next, when it has none there)
+  private func firstBox(_ range: Range<Int>) -> CGRect? {
+    let top = layout.y(ofRow: layout.row(of: range.lowerBound, assoc: 1))
+    return layout.rects(range, right: bounds.width, within: top...(top + 2 * layout.metrics.row)).first
   }
 
   /// "this match / all of them" in the bar
@@ -498,15 +603,17 @@ public final class CodeEditorView: NSView {
     bar.bounds.size = s
   }
 
-  /// A key's command, over the rows as laid out
+  /// A key's command, over the rows as laid out; one that would change the text does nothing when it cannot change
   public func perform(_ c: CodeCommand) {
+    guard isEditable || !c.changesText else { return }
     let before = editor.text
+    let composed = editor.composition
     var rows = layout
     // a page: the rows in view less one (out of a window, everything is in view)
     let seen = window == nil ? bounds.height : visibleRect.height
     rows.pageRows = max(1, Int((seen / look.metrics.row).rounded(.down)) - 1)
     editor.perform(c, in: rows)
-    changed(before)
+    changed(before, composed)
   }
 
   /// What reaches here: the input method's and AppKit's commands for keys CodeKeys has not
@@ -531,13 +638,13 @@ public final class CodeEditorView: NSView {
   }
 
   @objc public func cut(_ sender: Any?) {
-    guard !editor.selection.isEmpty else { return }
+    guard isEditable, !editor.selection.isEmpty else { return }
     copy(sender)
     change { $0.deleteBackward() }
   }
 
   @objc public func paste(_ sender: Any?) {
-    guard let s = pasteboard.string(forType: .string) else { return }
+    guard isEditable, let s = pasteboard.string(forType: .string) else { return }
     change { $0.insert(s) }
   }
 
@@ -571,9 +678,27 @@ public final class CodeEditorView: NSView {
   public override func mouseUp(with e: NSEvent) { editor.release() }
 }
 
+extension CodeEditorView: NSUserInterfaceValidations {
+  /// Cut, paste, undo and redo only while the text can change (undo and redo with a step to take); copy and cut with a
+  /// selection
+  public func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+    guard let action = item.action else { return true }
+    return switch action {
+    case #selector(cut(_:)): isEditable && !editor.selection.isEmpty
+    case #selector(copy(_:)): !editor.selection.isEmpty
+    case #selector(paste(_:)): isEditable
+    case #selector(undo(_:)): isEditable && editor.canUndo
+    case #selector(redo(_:)): isEditable && editor.canRedo
+    default: true
+    }
+  }
+}
+
 extension CodeEditorView: @preconcurrency NSTextInputClient {
-  /// Ranges are of the text as drawn: while an input method composes, with its text in it
+  /// Ranges are of the text as drawn: while an input method composes, with its text in it. Nothing is written while the
+  /// text cannot change
   public func insertText(_ string: Any, replacementRange: NSRange) {
+    guard isEditable else { return }
     let s = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
     change { e in
       if e.composition == nil, replacementRange.location != NSNotFound {
@@ -584,6 +709,7 @@ extension CodeEditorView: @preconcurrency NSTextInputClient {
   }
 
   public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+    guard isEditable else { return }
     let s = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
     change { e in
       if e.composition == nil, replacementRange.location != NSNotFound {
@@ -623,9 +749,7 @@ extension CodeEditorView: @preconcurrency NSTextInputClient {
   /// Where the candidate window goes: the range's first row, on screen
   public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
     actualRange?.pointee = range
-    let r =
-      layout.rects(range.location..<NSMaxRange(range), right: bounds.width).first
-      ?? layout.caret(range.location, assoc: 1)
+    let r = firstBox(range.location..<NSMaxRange(range)) ?? layout.caret(range.location, assoc: 1)
     guard let w = window else { return r }
     return w.convertToScreen(convert(r, to: nil))
   }

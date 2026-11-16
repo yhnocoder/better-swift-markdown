@@ -11,6 +11,18 @@ public enum CodeCommand: Hashable, Sendable {
   case copyLines(down: Bool)
   case deleteLines, selectLine, selectAll, splitLine, transpose
   case undo, redo
+
+  /// It can change the text; false for the commands that only move or select (what still works on text that cannot
+  /// change)
+  public var changesText: Bool {
+    switch self {
+    case .move, .selectLine, .selectAll: false
+    case .deleteBackward, .deleteForward, .deleteToLineEnd, .deleteGroup, .deleteLineBoundary, .newline, .indent,
+      .outdent, .toggleComment, .indentMore, .indentLess, .moveLines, .copyLines, .deleteLines, .splitLine, .transpose,
+      .undo, .redo:
+      true
+    }
+  }
 }
 
 /// A Mac's keys in a code editor: the web side's (CodeMirror's default and history keymaps, as a Mac has them, under

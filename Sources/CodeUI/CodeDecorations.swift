@@ -178,9 +178,38 @@ extension CodeDraw {
         band(s, color: b.color, in: ctx, gutter: gutter, width: width, shape: shape)
       }
     }
-    guard !d.marks.isEmpty else { return }
-    for r in first {
-      guard let image = d.marks[r.line] else { continue }
+    marks(d.marks, rows: first, in: ctx, markX: markX, markSize: markSize)
+  }
+
+  /// The same marks on a text laid out for editing, only where they reach into `dirty`: a text of any length costs
+  /// what is drawn of it
+  public static func decorations(
+    _ d: CodeDecorations, of layout: CodeTextLayout, in ctx: CGContext, dirty: CGRect, gutter: CGFloat,
+    width: CGFloat, band shape: CodeBandShape, markX: CGFloat, markSize: CGFloat
+  ) {
+    // a gutter picture may stand out of its row
+    let pad = max(0, markSize)
+    let first = layout.rows(in: (dirty.minY - pad)...(dirty.maxY + pad)).compactMap { r -> CodeLines.LineRow? in
+      let i = layout.index.line(ofRow: r)
+      guard layout.index.firstRows[i] == r else { return nil }
+      return CodeLines.LineRow(line: layout.firstNumber + i, y: layout.index.y(r), height: layout.metrics.row)
+    }
+    backgrounds(d.backgrounds, rows: first, in: ctx, width: width)
+    for b in d.bands {
+      if let s = layout.span(b.lines, through: b.through), s.upperBound > dirty.minY, s.lowerBound < dirty.maxY {
+        band(s, color: b.color, in: ctx, gutter: gutter, width: width, shape: shape)
+      }
+    }
+    marks(d.marks, rows: first, in: ctx, markX: markX, markSize: markSize)
+  }
+
+  /// The gutter's pictures of the rows' lines that have one, `markSize` square from `markX`, in the middle of the row
+  private static func marks(
+    _ images: [Int: CGImage], rows: [CodeLines.LineRow], in ctx: CGContext, markX: CGFloat, markSize: CGFloat
+  ) {
+    guard !images.isEmpty else { return }
+    for r in rows {
+      guard let image = images[r.line] else { continue }
       let box = CGRect(x: markX, y: r.y + (r.height - markSize) / 2, width: markSize, height: markSize)
       // the context is y-down: the picture drawn upright
       ctx.saveGState()

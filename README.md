@@ -13,7 +13,7 @@ macOS 27 or later, Swift 6.
 | Product | Imports | What it is |
 |---|---|---|
 | `CodeCore` | Foundation | Code editing without a view: the text, the selection, keys as commands, undo, find and replace, line comments, and `LineAnchors` (where a line went after an edit, for anything pinned to lines). |
-| `CodeUI` | AppKit, CodeCore | Code laid out and drawn (`CodeLines`, `CodeDraw`), and `CodeEditorView`: line numbers, current line, selection, wrapping by width, tab stops, bands behind lines, room after lines for the host's own content, a find bar. Colours come from a `CodeHighlighter`. |
+| `CodeUI` | AppKit, CodeCore | Code laid out and drawn (`CodeLines`, `CodeDraw`), and `CodeEditorView` (editable or read only): line numbers, current line, selection, wrapping by width, tab stops, bands behind lines, room after lines for the host's own content, a find bar. Colours come from a `CodeHighlighter`. |
 | `TreeSitterCore` | Foundation, tree-sitter | tree-sitter without a view: the grammars of Python, Rust and C, C++ and CUDA (`Language`), trees parsed over UTF-16 code units, whole or again after an edit (`SyntaxTree`, `TreeEdit`, `diffEdit`), their nodes, and queries with `#match?` and `#any-of?` (`Query`), for a host that reads code itself. |
 | `TreeSitterHighlight` | CodeUI, TreeSitterCore | A `CodeHighlighter` on tree-sitter: Python, Rust, C, C++ and CUDA built in, any other grammar registered by the host; incremental parsing while text is edited (`HighlightSession`). |
 | `MarkdownCore` | Foundation, CodeCore | Markdown as a document: block and inline lexing (marked's rules, JavaScript regex semantics), the source operations of the editor (blocks moved, lists indented, tables edited, paste shaped), all on the source text. |
@@ -35,6 +35,17 @@ view.colors = CodeColors(TreeSitterColors(HighlightSession(highlighter), languag
 view.onHeight = { h in /* the view does not scroll: size it */ }
 view.onChange = { text in /* save */ }
 ```
+
+Text and its colours can be given at once, and code can be shown only to read (selected, copied and searched, the
+keys it does not use passed on, so a scroll view around it scrolls with them):
+
+```swift
+let reader = CodeEditorView(text: text, look: myLook, editable: false, runs: runs)
+reader.reset(text: other, runs: otherRuns)   // another text in the same view
+```
+
+Only the lines drawn are laid out, so a long file opens and scrolls at the cost of a screenful; new colours and a
+moved selection lay nothing out.
 
 Another grammar, with a highlight query that uses the capture names `kw`, `op`, `fn`, `str`, `com`, `num`, `self`,
 `p` and `plain`:
