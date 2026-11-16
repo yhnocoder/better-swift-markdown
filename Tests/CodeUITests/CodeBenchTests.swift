@@ -106,7 +106,23 @@ extension CodeEditorViewTests {
     Self.measure("\(name) the whole text laid out, for comparison") { _ = v.layout.lines }
   }
 
+  /// A small text through the same steps, untimed: what the process does once (fonts, AppKit's classes, the first
+  /// event) is not the cost of a text, and falls on whichever test comes first
+  func warmUp() {
+    let (text, runs) = Self.code(lines: 40)
+    let v = CodeEditorView(text: text, look: look(), runs: runs)
+    v.frame = CGRect(x: 0, y: 0, width: 900, height: v.height)
+    draw(v, v.bounds)
+    let p = CGPoint(x: v.gutter + 40, y: v.height / 2)
+    v.mouseDown(with: click(v, at: p, count: 1))
+    v.mouseUp(with: click(v, at: p, count: 1, .leftMouseUp))
+    v.selectAll(nil)
+    v.runs = []
+    draw(v, v.bounds)
+  }
+
   @Test func aLongTextOpensAndScrollsAtTheCostOfWhatIsDrawn() {
+    warmUp()
     bench("2000 lines", lines: 2000, open: 50)
     let big = Self.code(lines: 30_000).text.utf8.count
     #expect(big >= 1_200_000)
