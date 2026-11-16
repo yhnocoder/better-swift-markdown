@@ -61,6 +61,12 @@ let package = Package(
     .testTarget(
       name: "MarkdownUITests", dependencies: ["MarkdownUI", "TestGuard", "CodeUI"],
       resources: [.copy("Fonts")]),
+    .executableTarget(name: "MarkdownBench", dependencies: ["MarkdownCore", "MarkdownUI", "CodeUI"]),
+    // a .md file read and edited in the sample look, its code coloured by TreeSitterHighlight
+    .executableTarget(
+      name: "MarkdownEditorDemo",
+      dependencies: ["MarkdownCore", "MarkdownUI", "CodeUI", "TreeSitterHighlight"]),
+    .testTarget(name: "MarkdownEditorDemoTests", dependencies: ["MarkdownEditorDemo", "TestGuard"]),
   ]
 )
 
