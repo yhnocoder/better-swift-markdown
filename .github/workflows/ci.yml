@@ -1,0 +1,38 @@
+name: CI
+# The package: build, unit tests and swift-format's lint. It targets the latest macOS only, so it needs the image with
+# Xcode 27; the newest Xcode on it is selected.
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+# a newer commit on the same pull request or branch replaces the run of the older one
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: build, test, lint
+    runs-on: xcode-27
+    # only against a job that hangs
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - name: Select the newest Xcode
+        run: |
+          sudo xcode-select -s "$(find /Applications -maxdepth 1 -type d -name 'Xcode_*.app' | sort -V | tail -1)"
+          swift --version
+      # the clones of tree-sitter and its grammars come with their whole history, which is slow to fetch on every run;
+      # Package.swift pins each of them, and Package.resolved is not committed
+      - uses: actions/cache@v5
+        with:
+          path: |
+            .build/repositories
+            .build/checkouts
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('Package.swift') }}
+      # one build of the package and its tests, which swift test then runs without building again
+      - run: swift build --build-tests
+      - run: swift test --skip-build
+      - if: ${{ !cancelled() }}
+        run: swift format lint --strict -r Sources Tests Package.swift

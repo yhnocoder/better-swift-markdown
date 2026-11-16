@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+/tools/engines/node_modules/
+Package.resolved
