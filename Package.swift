@@ -7,6 +7,7 @@ let package = Package(
   products: [
     .library(name: "CodeCore", targets: ["CodeCore"]),
     .library(name: "CodeUI", targets: ["CodeUI"]),
+    .library(name: "TreeSitterCore", targets: ["TreeSitterCore"]),
     .library(name: "TreeSitterHighlight", targets: ["TreeSitterHighlight"]),
     .library(name: "MarkdownCore", targets: ["MarkdownCore"]),
     .library(name: "MarkdownUI", targets: ["MarkdownUI"]),
@@ -30,11 +31,11 @@ let package = Package(
     .target(name: "CodeUI", dependencies: ["CodeCore"]),
     .testTarget(name: "CodeCoreTests", dependencies: ["CodeCore"], resources: [.copy("Fixtures")]),
     .testTarget(name: "CodeUITests", dependencies: ["CodeUI"]),
-    // code coloured by tree-sitter
+    // tree-sitter without a view: the built-in grammars, trees parsed (incrementally too) over UTF-16, queries; the one
+    // wrapper of its C API, under the highlighter and for a host's own reading of code
     .target(
-      name: "TreeSitterHighlight",
+      name: "TreeSitterCore",
       dependencies: [
-        "CodeUI",
         .product(name: "TreeSitter", package: "tree-sitter"),
         .product(name: "TreeSitterPython", package: "tree-sitter-python"),
         .product(name: "TreeSitterRust", package: "tree-sitter-rust"),
@@ -42,13 +43,16 @@ let package = Package(
         "CTreeSitterScanners",
       ]
     ),
+    .testTarget(name: "TreeSitterCoreTests", dependencies: ["TreeSitterCore"]),
+    // code coloured by tree-sitter
+    .target(name: "TreeSitterHighlight", dependencies: ["CodeUI", "TreeSitterCore"]),
     // the Python grammar's external scanner, which its package leaves out (include/scanners.h says why)
     .target(
       name: "CTreeSitterScanners",
       exclude: ["python/LICENSE"],
       cSettings: [.headerSearchPath("."), .disableWarning("shorten-64-to-32")]
     ),
-    .testTarget(name: "TreeSitterHighlightTests", dependencies: ["TreeSitterHighlight"]),
+    .testTarget(name: "TreeSitterHighlightTests", dependencies: ["TreeSitterHighlight", "TreeSitterCore"]),
     // Markdown read with source ranges, and the editor's operations on the source
     .target(name: "MarkdownCore", dependencies: ["CodeCore"]),
     .testTarget(name: "MarkdownCoreTests", dependencies: ["MarkdownCore"], resources: [.copy("Fixtures")]),
