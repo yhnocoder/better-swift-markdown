@@ -9,6 +9,8 @@ let package = Package(
     .library(name: "CodeUI", targets: ["CodeUI"]),
     .library(name: "TreeSitterHighlight", targets: ["TreeSitterHighlight"]),
     .library(name: "MarkdownCore", targets: ["MarkdownCore"]),
+    .library(name: "MarkdownUI", targets: ["MarkdownUI"]),
+    .library(name: "TestGuard", targets: ["TestGuard"]),
   ],
   dependencies: [
     .package(url: "https://github.com/tree-sitter/tree-sitter", exact: "0.25.10"),
@@ -50,6 +52,15 @@ let package = Package(
     // Markdown read with source ranges, and the editor's operations on the source
     .target(name: "MarkdownCore", dependencies: ["CodeCore"]),
     .testTarget(name: "MarkdownCoreTests", dependencies: ["MarkdownCore"], resources: [.copy("Fixtures")]),
+    // what a test process may not show or touch, replaced in a test process only
+    .target(name: "TestGuard"),
+    // Markdown laid out and drawn with Core Text, edited in place; formulas and diagrams in JavaScriptCore
+    .target(
+      name: "MarkdownUI", dependencies: ["MarkdownCore", "CodeUI", "TestGuard"],
+      resources: [.copy("Assets")]),
+    .testTarget(
+      name: "MarkdownUITests", dependencies: ["MarkdownUI", "TestGuard", "CodeUI"],
+      resources: [.copy("Fonts")]),
   ]
 )
 

@@ -1,0 +1,12 @@
+{
+  "name": "better-swift-markdown-engines",
+  "private": true,
+  "description": "Builds Sources/MarkdownUI/Assets/engines.js: MathJax and pele for JavaScriptCore",
+  "type": "module",
+  "scripts": { "build": "node build.mjs" },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "mathjax-full": "3.2.2",
+    "pele": "1.6.0"
+  }
+}
