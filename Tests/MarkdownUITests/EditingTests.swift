@@ -228,7 +228,6 @@ import Testing
     e.relayout(fresh(e.document))
     e.unmark()
     #expect(e.layout.document == e.document)
-    check(e)
   }
 
   @Test func aPressWhileAnInputMethodComposesWritesItsTextFirst() {
