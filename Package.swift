@@ -8,6 +8,7 @@ let package = Package(
     .library(name: "CodeCore", targets: ["CodeCore"]),
     .library(name: "CodeUI", targets: ["CodeUI"]),
     .library(name: "TreeSitterHighlight", targets: ["TreeSitterHighlight"]),
+    .library(name: "MarkdownCore", targets: ["MarkdownCore"]),
   ],
   dependencies: [
     .package(url: "https://github.com/tree-sitter/tree-sitter", exact: "0.25.10"),
@@ -46,6 +47,9 @@ let package = Package(
       cSettings: [.headerSearchPath("."), .disableWarning("shorten-64-to-32")]
     ),
     .testTarget(name: "TreeSitterHighlightTests", dependencies: ["TreeSitterHighlight"]),
+    // Markdown read with source ranges, and the editor's operations on the source
+    .target(name: "MarkdownCore", dependencies: ["CodeCore"]),
+    .testTarget(name: "MarkdownCoreTests", dependencies: ["MarkdownCore"], resources: [.copy("Fixtures")]),
   ]
 )
 
