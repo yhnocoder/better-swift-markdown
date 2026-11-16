@@ -231,6 +231,17 @@ import Testing
     check(e)
   }
 
+  @Test func aPressWhileAnInputMethodComposesWritesItsTextFirst() {
+    // the marked text makes the shown text longer than the source: a press past the source's end
+    let (e, _) = core("前后\n\n末", caret: 5)
+    e.setMarked("zhongwen de wenzi", selected: NSRange(location: 17, length: 0))
+    let end = e.layout.caretRect(MDCaret(e.layout.document.source.utf16.count))!
+    e.mouseDown(at: CGPoint(x: end.midX, y: end.midY), clicks: 2, extend: false)
+    e.mouseUp()
+    #expect(e.marked == nil && e.source == "前后\n\n末zhongwen de wenzi")
+    #expect(e.layout.document == e.document)
+  }
+
   @Test func composingDoesNotMoveTheTextBeforeIt() {
     let src = "A **bold** word and then some more words to wrap the line somewhere along."
     let (e, _) = core(src, caret: 20)

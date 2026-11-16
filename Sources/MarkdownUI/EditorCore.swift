@@ -925,6 +925,9 @@ public final class EditorCore {
   /// A press: one click places the caret, two select a word, three a paragraph; with ⇧ the selection is extended. The
   /// layout holds still until `settle` after the release
   public func mouseDown(at p: CGPoint, clicks: Int, extend: Bool) {
+    // a press ends a composition, its text written, as in a system text field: what follows reads the source by the
+    // layout's offsets, which are the source's only without marked text
+    if let m = marked { insert(m.text) }
     endLone()
     // a press on a drawn formula block opens its TeX, the caret at its end (editor/mathblock.ts); on the block itself, not
     // in the space beside it, where a gap's caret goes

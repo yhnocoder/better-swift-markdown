@@ -149,4 +149,17 @@ import Testing
     v.core.undo()
     #expect(v.core.source == "start")
   }
+
+  @Test func aPressWhileAnInputMethodComposesWritesItsTextFirst() throws {
+    let v = try view("前后", caret: 1)
+    let none = NSRange(location: NSNotFound, length: 0)
+    v.setMarkedText("zhong", selectedRange: NSRange(location: 5, length: 0), replacementRange: none)
+    let at = try #require(v.core.layout.caretRect(MDCaret(0)))
+    let press = try #require(
+      NSEvent.mouseEvent(
+        with: .leftMouseDown, location: v.convert(CGPoint(x: at.midX, y: at.midY), to: nil), modifierFlags: [],
+        timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+    v.mouseDown(with: press)
+    #expect(!v.hasMarkedText() && v.core.source == "前zhong后")
+  }
 }

@@ -2590,6 +2590,11 @@ public final class MarkdownEditorView: NSView {
   public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { acceptsFirstClick }
 
   public override func mouseDown(with e: NSEvent) {
+    // before anything of the press reads the layout against the source: see EditorCore.mouseDown
+    if core.marked != nil {
+      unmarkText()
+      inputContext?.discardMarkedText()
+    }
     openingPress = openedBy.map { e.clickCount == $0 + 1 } ?? false
     openedBy = nil
     pressed(openingPress ? Self.single(e) : e)
