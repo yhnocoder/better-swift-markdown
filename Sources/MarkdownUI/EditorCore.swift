@@ -81,11 +81,26 @@ public final class EditorCore {
     }
   }
 
-  /// The same text laid out anew (another look, appearance or width): selection and undo history kept
+  /// The same text laid out anew (another look, appearance or width): selection and undo history kept. While an input
+  /// method composes, `l` is of the source or of what the layout shows (the source with the marked text in it), and
+  /// the composition goes on in it either way
   public func relayout(_ l: BlockLayout) {
-    precondition(l.document == document, "a relayout lays out the same source")
+    guard let m = marked else {
+      precondition(l.document == document, "a relayout lays out the same source")
+      layout = l
+      layout.setHead(selection.isEmpty ? selection.head : nil)
+      onRelayout?()
+      return
+    }
+    if l.document == document {
+      // a host lays out its source, which never has the marked text: put in here, as setMarked puts it
+      let shown = document.reparse(replacing: m.at..<m.at, with: m.text)
+      l.update(to: shown, replacing: m.at..<m.at, delta: (m.text as NSString).length)
+    } else {
+      precondition(l.document == layout.document, "a relayout lays out the same source")
+    }
     layout = l
-    layout.setHead(selection.isEmpty && marked == nil ? selection.head : nil)
+    layout.setHead(nil)
     onRelayout?()
   }
 
@@ -910,6 +925,9 @@ public final class EditorCore {
   /// A press: one click places the caret, two select a word, three a paragraph; with ⇧ the selection is extended. The
   /// layout holds still until `settle` after the release
   public func mouseDown(at p: CGPoint, clicks: Int, extend: Bool) {
+    // a press ends a composition, its text written, as in a system text field: what follows reads the source by the
+    // layout's offsets, which are the source's only without marked text
+    if let m = marked { insert(m.text) }
     endLone()
     // a press on a drawn formula block opens its TeX, the caret at its end (editor/mathblock.ts); on the block itself, not
     // in the space beside it, where a gap's caret goes
