@@ -201,6 +201,36 @@ import Testing
     check(e)
   }
 
+  @Test func aNewLayoutWhileAnInputMethodComposesKeepsTheComposition() {
+    let (e, _) = core("前后", caret: 1)
+    func fresh(_ d: MarkdownDocument) -> BlockLayout {
+      BlockLayout(d, width: 240, theme: testTheme, layout: nil, resources: TestResources())
+    }
+    e.setMarked("zhong", selected: NSRange(location: 5, length: 0))
+    // of the source: the marked text is put in
+    let ofSource = fresh(e.document)
+    e.relayout(ofSource)
+    #expect(e.layout === ofSource && e.source == "前后" && e.layout.document.source == "前zhong后")
+    #expect(e.marked?.text == "zhong" && !e.markedRects.isEmpty && e.layout.head == nil)
+    // of what is shown: taken as it is
+    let ofShown = fresh(e.layout.document)
+    e.relayout(ofShown)
+    #expect(e.layout === ofShown && e.layout.document.source == "前zhong后" && !e.markedRects.isEmpty)
+    // the composition goes on in the new layout, and commits into the source
+    e.setMarked("中", selected: NSRange(location: 1, length: 0))
+    #expect(e.layout.document.source == "前中后" && e.source == "前后")
+    e.insert("中")
+    #expect(e.source == "前中后" && e.marked == nil && e.selection == MDSelection(2))
+    e.undo()
+    #expect(e.source == "前后")
+    // given up after a new layout: the source shown again
+    e.setMarked("ni", selected: NSRange(location: 2, length: 0))
+    e.relayout(fresh(e.document))
+    e.unmark()
+    #expect(e.layout.document == e.document)
+    check(e)
+  }
+
   @Test func composingDoesNotMoveTheTextBeforeIt() {
     let src = "A **bold** word and then some more words to wrap the line somewhere along."
     let (e, _) = core(src, caret: 20)

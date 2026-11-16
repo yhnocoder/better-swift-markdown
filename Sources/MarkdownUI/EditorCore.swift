@@ -81,11 +81,26 @@ public final class EditorCore {
     }
   }
 
-  /// The same text laid out anew (another look, appearance or width): selection and undo history kept
+  /// The same text laid out anew (another look, appearance or width): selection and undo history kept. While an input
+  /// method composes, `l` is of the source or of what the layout shows (the source with the marked text in it), and
+  /// the composition goes on in it either way
   public func relayout(_ l: BlockLayout) {
-    precondition(l.document == document, "a relayout lays out the same source")
+    guard let m = marked else {
+      precondition(l.document == document, "a relayout lays out the same source")
+      layout = l
+      layout.setHead(selection.isEmpty ? selection.head : nil)
+      onRelayout?()
+      return
+    }
+    if l.document == document {
+      // a host lays out its source, which never has the marked text: put in here, as setMarked puts it
+      let shown = document.reparse(replacing: m.at..<m.at, with: m.text)
+      l.update(to: shown, replacing: m.at..<m.at, delta: (m.text as NSString).length)
+    } else {
+      precondition(l.document == layout.document, "a relayout lays out the same source")
+    }
     layout = l
-    layout.setHead(selection.isEmpty && marked == nil ? selection.head : nil)
+    layout.setHead(nil)
     onRelayout?()
   }
 
