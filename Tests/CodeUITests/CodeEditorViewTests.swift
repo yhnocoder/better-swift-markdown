@@ -168,4 +168,57 @@ import Testing
     v.place(CGRect(x: 10, y: 20, width: 300, height: 400), zoom: 2)
     #expect(v.layout.lineRows.count > rows.count && heights.count == 1)
   }
+
+  /// Text and colours given at once draw what the text and then its colours draw
+  @Test func textAndColoursGivenTogetherAreDrawnAsTextThenColours() {
+    let text = "def f(x):\n\treturn x + 1  # one\n"
+    let runs = [[CodeRun(columns: 0..<3, style: 1)], [CodeRun(columns: 1..<7, style: 1)], []]
+    let both = CodeEditorView(text: text, look: look(), runs: runs)
+    both.frame = CGRect(x: 0, y: 0, width: 400, height: 200)
+    let after = view(text)
+    after.runs = runs
+    #expect(pixels(both) == pixels(after))
+  }
+
+  /// Clicks, drags, keys that move the selection and found matches lay nothing out, nor do new colours; an edit does
+  @Test func onlyEditsLayTheTextOutAgain() {
+    let v = view("alpha beta\ngamma delta\nepsilon")
+    var layouts = 0
+    var heights = 0
+    v.onLayout = { layouts += 1 }
+    v.onHeight = { _ in heights += 1 }
+    let row = v.layout.placed(0)
+    let p = CGPoint(x: v.layout.caret(3, assoc: 1).minX + 1, y: row.y + row.height / 2)
+    v.mouseDown(with: click(v, at: p, count: 1))
+    v.mouseDragged(with: click(v, at: CGPoint(x: p.x + 20, y: p.y + row.height), count: 1, .leftMouseDragged))
+    v.mouseUp(with: click(v, at: p, count: 1, .leftMouseUp))
+    #expect(!v.editor.selection.isEmpty)
+    v.keyDown(with: key(124, "", .shift))
+    v.findLook = FindBar.Look(fill: CGColor(gray: 1, alpha: 1), line: CGColor(gray: 0.5, alpha: 1), radius: 6)
+    v.keyDown(with: key(3, "f", .command))
+    v.findBar?.query.stringValue = "gamma"
+    v.findNext(forward: true)
+    #expect(v.editor.selection == CodeSelection(anchor: 11, head: 16))
+    v.selectAll(nil)
+    v.runs = [[CodeRun(columns: 0..<5, style: 1)]]
+    #expect(layouts == 0 && heights == 0)
+    v.insertText("\n", replacementRange: NSRange(location: NSNotFound, length: 0))
+    #expect(layouts == 1 && heights == 1)
+  }
+
+  @Test func resetPutsInAnotherTextWithItsColoursAndForgetsTheOne() {
+    let v = view("old text")
+    var said = 0
+    v.onChange = { _ in said += 1 }
+    v.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
+    var layouts = 0
+    v.onLayout = { layouts += 1 }
+    let runs = [[CodeRun(columns: 0..<3, style: 1)], []]
+    v.reset(text: "new\ntext", runs: runs)
+    #expect(v.editor.text == "new\ntext" && v.editor.selection == CodeSelection(0) && !v.editor.canUndo)
+    #expect(said == 1 && layouts == 1 && v.runs == runs)
+    let fresh = view("new\ntext")
+    fresh.runs = runs
+    #expect(pixels(v) == pixels(fresh) && v.height == fresh.height)
+  }
 }

@@ -18,6 +18,8 @@ public protocol CodeHighlighter: Sendable {
   /// Called on the main thread when new colours are in: draw again
   public var ready: (() -> Void)?
   private let highlighter: any CodeHighlighter
+  /// The text as last given, and its lines
+  private var text: String
   private var lines: [String]
   private var runs: [[CodeRun]]
   /// Lines coloured for the text as it is now
@@ -28,6 +30,7 @@ public protocol CodeHighlighter: Sendable {
   /// `runs`: colours the text has already (as it was drawn before editing), each line's
   public init(_ highlighter: any CodeHighlighter, text: String, runs: [[CodeRun]] = []) {
     self.highlighter = highlighter
+    self.text = text
     lines = text.components(separatedBy: "\n")
     self.runs = lines.indices.map { $0 < runs.count ? runs[$0] : [] }
     fresh = lines.indices.map { $0 < runs.count }
@@ -35,11 +38,21 @@ public protocol CodeHighlighter: Sendable {
 
   /// Each line's colours now, for the text as it is now; lines of `visible` not coloured for it yet are asked for
   public func runs(for text: String, visible: Range<Int>) -> [[CodeRun]] {
-    let now = text.components(separatedBy: "\n")
-    if now != lines { follow(now) }
-    let want = visible.clamped(to: 0..<lines.count)
-    if !asking, want.contains(where: { !fresh[$0] }) { ask(around: want) }
+    if text != self.text {
+      let now = text.components(separatedBy: "\n")
+      if now != lines { follow(now) }
+      self.text = text
+    }
+    see(visible)
     return runs
+  }
+
+  /// Lines of `visible` not coloured yet for the text as last given are asked for: the text is not split or compared,
+  /// and nothing is asked while colours are on their way. For lines that came into view
+  public func see(_ visible: Range<Int>) {
+    guard !asking else { return }
+    let want = visible.clamped(to: 0..<lines.count)
+    if want.contains(where: { !fresh[$0] }) { ask(around: want) }
   }
 
   /// The colours kept through an edit: the lines before and after the changed ones keep theirs, a changed line those
@@ -74,12 +87,12 @@ public protocol CodeHighlighter: Sendable {
     let extra = max(0, (CodeColors.batch - want.count) / 2)
     let lo = max(0, want.lowerBound - extra)
     let range = lo..<min(lines.count, lo + max(CodeColors.batch, want.count))
-    let text = lines.joined(separator: "\n")
+    let whole = text
     let asked = (version, Array(lines[range]))
     let h = highlighter
     asking = true
     Task(priority: .userInitiated) { [weak self] in
-      let got = await h.runs(of: text, lines: range)
+      let got = await h.runs(of: whole, lines: range)
       self?.asking = false
       self?.take(got, range, asked)
     }
